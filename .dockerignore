@@ -1,0 +1,9 @@
+.bak_refactor/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.git/
+data/bot.db
+data/favorites.json
+data/backups/

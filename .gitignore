@@ -1,0 +1,14 @@
+# Секрети та локальні дані — не комітити!
+config.py
+token.txt
+.env
+
+# Дані користувачів (генеруються під час роботи)
+data/favorites.json
+data/bot.db
+data/backups/
+
+# Кеш Python
+__pycache__/
+*.pyc
+*.pyo
