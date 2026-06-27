@@ -53,6 +53,33 @@ DEFAULT_LANG = _get("DEFAULT_LANG", "uk")
 
 ENABLE_REALTIME_WS = _flag("ENABLE_REALTIME_WS", False)
 
+# ───────────────────────── Алго-торгівля (R&D) ─────────────────────────
+TRADE_MODE = _get("TRADE_MODE", "paper").lower()          # paper | live
+BINANCE_API_KEY = _get("BINANCE_API_KEY")
+BINANCE_API_SECRET = _get("BINANCE_API_SECRET")
+BINANCE_TESTNET = _flag("BINANCE_TESTNET", True)
+
+FEE_BPS = float(_get("FEE_BPS", "10") or "10")
+SLIPPAGE_BPS = float(_get("SLIPPAGE_BPS", "5") or "5")
+EXEC_LATENCY_BARS = int(_get("EXEC_LATENCY_BARS", "1") or "1")
+
+START_EQUITY = float(_get("START_EQUITY", "1000") or "1000")
+POLL_SECONDS = int(_get("POLL_SECONDS", "20") or "20")
+
+ADMIN_IDS = [
+    int(x) for x in _get("ADMIN_IDS").replace(";", ",").split(",") if x.strip().isdigit()
+]
+
+
+def is_admin(user_id: int) -> bool:
+    """Порожній ADMIN_IDS = торгівля дозволена всім (зручно для демо)."""
+    return not ADMIN_IDS or user_id in ADMIN_IDS
+
+
+def can_trade_live() -> bool:
+    """live-режим доступний лише коли задані ключі біржі."""
+    return TRADE_MODE == "live" and bool(BINANCE_API_KEY and BINANCE_API_SECRET)
+
 
 def feature_status() -> dict:
     """Зведення, які фічі ввімкнені (для /admin або логів)."""
@@ -65,4 +92,7 @@ def feature_status() -> dict:
         "payments_stars": True,
         "payments_card": bool(PAYMENT_PROVIDER_TOKEN),
         "realtime_ws": ENABLE_REALTIME_WS,
+        "trade_mode": TRADE_MODE,
+        "binance_testnet": BINANCE_TESTNET,
+        "binance_keys": bool(BINANCE_API_KEY and BINANCE_API_SECRET),
     }

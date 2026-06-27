@@ -1,168 +1,136 @@
-# Crypto Risk Bot
+# Algo-Trading R&D Bot
 
-> A Telegram bot for crypto market analysis and **risk scoring** — charts, signals,
-> on-chain token safety checks, derivatives, news + AI, portfolio tracking, smart
-> alerts, and Telegram Stars monetization.
+> Дослідницька платформа алгоритмічної крипто-торгівлі з керуванням через Telegram.
+> Повний цикл: **збір даних → бектест → оптимізація параметрів → live-запуск на
+> Binance (paper/testnet) → reconcile live vs backtest із розкладанням execution gap.**
 
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="aiogram" src="https://img.shields.io/badge/aiogram-3.x-2CA5E0?logo=telegram&logoColor=white">
-  <img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white">
-  <img alt="No API keys" src="https://img.shields.io/badge/API%20keys-not%20required-2ea043">
+  <img alt="Binance" src="https://img.shields.io/badge/Binance-spot%20%2B%20testnet-F0B90B?logo=binance&logoColor=white">
+  <img alt="No heavy deps" src="https://img.shields.io/badge/deps-stdlib%20only-2ea043">
 </p>
 
-**Everything works out of the box — no API keys required.** Market data comes from
-public CoinGecko and OKX endpoints. Optional keys only switch on extra features.
+Працює «з коробки»: ринкові дані Binance публічні й не вимагають ключів. Власний
+мінімальний клієнт біржі на `requests` + `hmac` (без ccxt/pandas/numpy) — щоб було
+видно, що саме відбувається на рівні API, коли треба пояснювати розрив із бектестом.
 
 ---
 
-## ✨ Features
+## Навіщо це
 
-**Market analysis**
-- Pick a coin with buttons or by typing a ticker/name (e.g. `pepe`)
-- Chart timeframes from **1 minute to 1 year** (1m, 5m, 15m, 1H, 4H, 1D, 1W, 1M, 3M, 6M, 1Y)
-- **Line and candlestick charts** on any timeframe, with support/resistance levels
-- **Risk score 0–100** plus RSI, volatility, trend, max drawdown
-- **Fear & Greed Index**
-- **LONG / SHORT signals** with ATR-based Stop Loss / Take Profit and Risk/Reward
-- **Whole-market overview** (`/market`): market cap, BTC/ETH dominance, volume
-- **Top gainers / losers** over 24h (`/top`)
+Типова проблема алго-торгівлі: стратегія гарна **на бектесті**, але в реальному
+виконанні «не летить». Цей бот побудований саме навколо питання **чому** —
+і відповідає на нього числами, а не відчуттями.
 
-**Pro toolkit (v4)**
-- **On-chain token risk** (`/risk <network> <address>`) — honeypot, buy/sell tax,
-  owner privileges, liquidity lock, holder concentration (GoPlus + honeypot.is)
-- **Smart alerts** (`/alert BTC price > 70000`) — rules on `price`, `pct`, `rsi`, `volume`
-- **Derivatives** (`/deriv BTC`) — funding rate, open interest, long/short ratio (OKX)
-- **Technical signals** (`/signals BTC`) — MACD + Bollinger + RSI + EMA cross + divergences
-- **Backtesting** (`/backtest BTC`) — EMA-cross & RSI strategies vs Buy & Hold
-- **News + AI** (`/news`, `/ask`) — RSS/CryptoPanic headlines with sentiment, OpenAI helper
-- **Portfolio** (`/portfolio`, `/addcoin BTC 0.5 60000`) — positions, P&L, allocation
-- **Monetization** — PRO subscription via **Telegram Stars**, with referrals
+Кожен бектест показує **два** результати:
+- **Ідеальний** — вхід по ціні закриття бару-сигналу, без комісій і проковзування
+  (верхня межа, яку часто видають за реальність);
+- **Реалістичний** — вхід на відкритті *наступного* бару + комісії + slippage.
 
-**Polish**
-- Auto-cleanup of stale messages — the chat always shows only the current card
-- Update timestamps down to the second
-- No emoji — all visuals are generated as SVG cards and rendered to PNG
-  (via `cairosvg`, or a built-in Pillow rasterizer that needs no system libraries)
-- Localization `uk` / `en` (`/lang en`), per-user rate limiting, optional Sentry
-
-> Intraday timeframes (1m–4H) pull native OKX candles (60–96 real bars). If a coin
-> isn't on OKX, the bot suggests using a 1D+ timeframe (CoinGecko data).
+А `reconcile` після live-прогону розкладає розрив `ідеал → live` на складові:
+запізнення виконання, комісії+проковзування і **residual** (усе незмодельоване:
+пропущені бари, гранулярність полінгу, часткові виконання, поведінка біржі).
 
 ---
 
-## 🚀 Quick start
+## Швидкий старт
 
 ```bash
 pip install -r requirements.txt
 python bot.py
 ```
 
-1. Create a bot with [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token
-2. Put it in `.env`:
+1. Створіть бота у [@BotFather](https://t.me/BotFather) → `/newbot` → токен у `.env`:
    ```dotenv
-   BOT_TOKEN=your_token_here
+   BOT_TOKEN=...
    ```
-3. Run `python bot.py` and send `/start` to your bot in Telegram
+2. `python bot.py`, далі в Telegram: `/start`.
 
-On first launch the SQLite database `data/bot.db` is created automatically.
-Recommended Python: **3.12** (tested).
+Режим за замовчуванням — **paper** (симуляція виконання на реальних даних, нуль
+ризику). База `data/bot.db` створюється автоматично.
 
 ---
 
-## 🔑 Optional keys (`.env`)
+## Команди
 
-Only `BOT_TOKEN` is required. Everything else just unlocks extra features.
+| Команда | Що робить |
+|---|---|
+| `/strategies` | список стратегій і параметрів |
+| `/backtest SYM STRAT [TF]` | бектест: ідеал vs реалізм + Buy&Hold |
+| `/optimize SYM STRAT [TF]` | grid search параметрів + **walk-forward** (тест на перепідгонку) |
+| `/run SYM STRAT [TF]` | запустити стратегію live (paper або Binance) |
+| `/status`, `/runs` | активні прогони / історія |
+| `/stop ID` | зупинити прогін |
+| `/report ID` | **reconcile**: live vs backtest + розклад execution gap |
+| `/mode` | поточний режим виконання і модель витрат |
 
-| Variable | Enables | Without it |
+`SYM`: `BTC`, `ETH`, `eth/usdt`… · `STRAT`: `ema_cross` (алиас `ema`),
+`rsi_rev` (алиас `rsi`) · `TF`: `1m 5m 15m 1h 4h 1d`.
+
+Приклад: `/backtest BTC ema 1h` → `/optimize BTC ema 1h` → `/run BTC ema 1h`
+→ (через кілька барів) `/report 1`.
+
+---
+
+## Стратегії
+
+Дві «перспективні на бектесті» стратегії — точка старту (як у ТЗ):
+
+- **EMA Cross (trend)** — лонг, поки EMA(fast) > EMA(slow); вихід навпаки.
+- **RSI Reversion (mean-revert)** — купити перепроданість (RSI < low), вийти на RSI > high.
+
+Сигнал на барі `i` рахується **лише** з даних `[0..i]` — жодного зазирання в
+майбутнє (типове джерело брехливого бектесту). Логіка *сигналу* і логіка
+*виконання* навмисно розділені — execution gap живе саме у виконанні.
+
+Додати свою стратегію: підкласити `Strategy` у [engine/strategies.py](engine/strategies.py)
+(`target_positions` повертає цільову позицію 0/1 по барах) і додати в `STRATEGIES`.
+
+---
+
+## Налаштування виконання (`.env`)
+
+| Змінна | Призначення | Типове |
 |---|---|---|
-| `OPENAI_API_KEY` | `/ask` AI helper + AI analysis explanations | feature politely disabled |
-| `OPENAI_MODEL` | model for the AI helper | `gpt-4o-mini` |
-| `CRYPTOPANIC_API_KEY` | votes/sentiment in news | RSS feeds still work |
-| `SENTRY_DSN` | error monitoring | disabled (local logs only) |
-| `REDIS_URL` | shared cache across instances | in-memory cache |
-| `PRO_PRICE_STARS` / `PRO_DAYS` | PRO price & duration | 299 ⭐ / 30 days |
-| `RATE_*`, `ALERTS_*` | rate & alert-count limits | sensible defaults |
-| `DEFAULT_LANG` | default language (`uk`/`en`) | `uk` |
+| `TRADE_MODE` | `paper` (симуляція) або `live` (реальні ордери) | `paper` |
+| `BINANCE_API_KEY/SECRET` | ключі для `live` (testnet або бій) | — |
+| `BINANCE_TESTNET` | `1` = testnet.binance.vision, `0` = бій | `1` |
+| `FEE_BPS` | комісія, базисні пункти (10 = 0.1%) | `10` |
+| `SLIPPAGE_BPS` | модель проковзування | `5` |
+| `EXEC_LATENCY_BARS` | запізнення виконання у барах (1 = реалізм) | `1` |
+| `START_EQUITY` | стартовий капітал прогону, USDT | `1000` |
+| `POLL_SECONDS` | період опитування біржі | `20` |
+| `ADMIN_IDS` | хто може запускати торгівлю (порожнє = всі) | — |
 
-`.env` is git-ignored, so your token stays out of version control.
-
----
-
-## 💬 Commands
-
-| Command | Description |
-|---------|-------------|
-| `/start` | coin selection menu |
-| `/market` | whole-market overview + Fear & Greed |
-| `/top` | top gainers & losers (24h) |
-| `/favorites` | favorites & price-change alerts |
-| `/risk <net> <addr>` | on-chain token risk check |
-| `/alert`, `/alerts`, `/delalert` | smart alert rules |
-| `/deriv`, `/signals`, `/backtest` | derivatives, confluence signals, backtest |
-| `/news`, `/ask` | news + sentiment, AI helper (PRO) |
-| `/portfolio`, `/addcoin`, `/delcoin` | portfolio tracking |
-| `/upgrade`, `/pro` | PRO subscription (Telegram Stars) |
-| `/lang` | switch language (`uk`/`en`) |
-| `/help` | help |
-
-You can also just send a ticker or name as plain text.
+> Щоб перейти на реальні гроші: `TRADE_MODE=live`, `BINANCE_TESTNET=0` і ключі з
+> правами на спот-торгівлю. Починайте з малого депозиту.
 
 ---
 
-## 📈 What the risk score means
-
-| Score | Category |
-|-------|----------|
-| 0–29 | LOW |
-| 30–54 | MODERATE |
-| 55–74 | HIGH |
-| 75–100 | VERY HIGH |
-
-Components: annualized volatility (up to 40), 30-day max drawdown (up to 30),
-RSI extremes (up to 15), market-cap size (up to 15).
-
-**LONG / SHORT signal** weighs EMA12/EMA48 trend (±2.0), RSI (±1.5), momentum
-(±1.0) and 24h change (±0.5), then picks a direction with a confidence %.
-Levels: Stop Loss = price ∓ 1.5×ATR, Take Profit = price ± 2.5×ATR (R/R ≈ 1:1.67).
-
----
-
-## 🐳 Docker
-
-```bash
-docker compose up -d --build
-docker compose logs -f bot
-```
-
-The database and favorites live in the `./data` volume and survive restarts.
-The `redis` service is optional — remove it if you don't use the shared cache.
-
-Database backup: `python scripts/backup.py` (writes to `data/backups/`).
-
----
-
-## 🗂️ Project structure
+## Архітектура
 
 ```
-bot.py            entry point (thin shim → app.main)
-app/              main (handlers, keyboards, message lifecycle),
-                  alerts (rules + background loop), payments (Telegram Stars),
-                  ratelimit (per-user middleware)
-core/             settings (.env), db (async SQLite), cache (Redis/memory),
-                  storage (favorites.json), i18n (uk/en)
-sources/          market_data (CoinGecko/OKX), onchain (GoPlus + honeypot.is),
-                  derivatives (OKX), news (RSS/CryptoPanic)
-analytics/        analysis (risk score, RSI, ATR, S/R), indicators (MACD,
-                  Bollinger, divergences), signals (LONG/SHORT), backtest,
-                  portfolio, ai (OpenAI)
-render/           svg_render (SVG cards), pil_raster (SVG→PNG on Pillow), cards
-data/             runtime data (bot.db, favorites.json, backups/) — git-ignored
-scripts/          backup.py
+bot.py              точка входу → app.main
+app/main.py         Telegram-пульт: команди, кнопки, форматування звітів
+core/               settings (.env), db (async SQLite: runs/fills/equity), i18n, cache
+exchange/binance.py мінімальний клієнт: публічні свічки + підписані ордери (HMAC)
+engine/
+  strategies.py     стратегії як чисті функції сигналів (EMA cross, RSI reversion)
+  backtester.py     подієвий бектест: латентність + комісії + slippage
+  metrics.py        Sharpe, CAGR, max DD, win rate, profit factor, expectancy
+  optimizer.py      grid search + walk-forward (in-sample / out-of-sample)
+  broker.py         виконання: PaperBroker (симуляція) / LiveBroker (Binance)
+  runner.py         live-цикл на прогін: нові бари → сигнал → ордер → запис у БД
+  reconcile.py      live vs backtest + декомпозиція execution gap
+data/               bot.db (runtime, git-ignored)
 ```
 
-All network calls run in threads (`asyncio.to_thread`), so the bot never blocks.
+Усі мережеві виклики йдуть через `asyncio.to_thread`, тож бот не блокується.
+Прогони переживають рестарт: стан (cash/units) відновлюється з таблиці `fills`,
+а `runner.resume_all()` піднімає всі прогони зі статусом `running`.
 
 ---
 
-> ⚠️ Signals, backtests and risk scores are **not financial advice**.
+> ⚠️ Бектести, сигнали та live-результати — **не фінансова порада**. Алго-торгівля
+> реальними коштами пов'язана з ризиком втрати капіталу.
