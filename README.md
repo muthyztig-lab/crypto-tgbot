@@ -1,8 +1,8 @@
 # Algo-Trading R&D Bot
 
-> Дослідницька платформа алгоритмічної крипто-торгівлі з керуванням через Telegram.
-> Повний цикл: **збір даних → бектест → оптимізація параметрів → live-запуск на
-> Binance (paper/testnet) → reconcile live vs backtest із розкладанням execution gap.**
+> A research platform for algorithmic crypto trading, controlled from Telegram.
+> Full loop: **data → backtest → parameter optimization → live run on Binance
+> (paper/testnet) → reconcile of live vs backtest with an execution-gap breakdown.**
 
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
@@ -11,126 +11,131 @@
   <img alt="No heavy deps" src="https://img.shields.io/badge/deps-stdlib%20only-2ea043">
 </p>
 
-Працює «з коробки»: ринкові дані Binance публічні й не вимагають ключів. Власний
-мінімальний клієнт біржі на `requests` + `hmac` (без ccxt/pandas/numpy) — щоб було
-видно, що саме відбувається на рівні API, коли треба пояснювати розрив із бектестом.
+Runs out of the box: Binance market data is public and needs no keys. The exchange
+client is a minimal `requests` + `hmac` implementation (no ccxt / pandas / numpy),
+so it stays obvious what happens at the API level when you have to explain why the
+live result differs from the backtest.
 
 ---
 
-## Навіщо це
+## Why this exists
 
-Типова проблема алго-торгівлі: стратегія гарна **на бектесті**, але в реальному
-виконанні «не летить». Цей бот побудований саме навколо питання **чому** —
-і відповідає на нього числами, а не відчуттями.
+The classic problem in algo trading: a strategy looks great **in the backtest**
+but underperforms in real execution. This bot is built around answering **why** —
+with numbers, not gut feeling.
 
-Кожен бектест показує **два** результати:
-- **Ідеальний** — вхід по ціні закриття бару-сигналу, без комісій і проковзування
-  (верхня межа, яку часто видають за реальність);
-- **Реалістичний** — вхід на відкритті *наступного* бару + комісії + slippage.
+Every backtest reports **two** results:
+- **Ideal** — fill at the signal bar's close, zero fees, zero slippage (the upper
+  bound that is often mistaken for reality);
+- **Realistic** — fill at the *next* bar's open + fees + slippage.
 
-А `reconcile` після live-прогону розкладає розрив `ідеал → live` на складові:
-запізнення виконання, комісії+проковзування і **residual** (усе незмодельоване:
-пропущені бари, гранулярність полінгу, часткові виконання, поведінка біржі).
+After a live run, `reconcile` decomposes the `ideal → live` gap into:
+execution latency, fees + slippage, and **residual** (everything unmodeled: missed
+bars, polling granularity, partial fills, real exchange behavior).
 
 ---
 
-## Швидкий старт
+## Quick start
 
 ```bash
 pip install -r requirements.txt
 python bot.py
 ```
 
-1. Створіть бота у [@BotFather](https://t.me/BotFather) → `/newbot` → токен у `.env`:
+1. Create a bot via [@BotFather](https://t.me/BotFather) → `/newbot` → put the token in `.env`:
    ```dotenv
    BOT_TOKEN=...
    ```
-2. `python bot.py`, далі в Telegram: `/start`.
+2. Run `python bot.py`, then send `/start` in Telegram.
 
-Режим за замовчуванням — **paper** (симуляція виконання на реальних даних, нуль
-ризику). База `data/bot.db` створюється автоматично.
+The default mode is **paper** (execution simulated on real market data, zero risk).
+The SQLite database `data/bot.db` is created automatically on first run.
 
 ---
 
-## Команди
+## Commands
 
-| Команда | Що робить |
+| Command | Description |
 |---|---|
-| `/strategies` | список стратегій і параметрів |
-| `/backtest SYM STRAT [TF]` | бектест: ідеал vs реалізм + Buy&Hold |
-| `/optimize SYM STRAT [TF]` | grid search параметрів + **walk-forward** (тест на перепідгонку) |
-| `/run SYM STRAT [TF]` | запустити стратегію live (paper або Binance) |
-| `/status`, `/runs` | активні прогони / історія |
-| `/stop ID` | зупинити прогін |
-| `/report ID` | **reconcile**: live vs backtest + розклад execution gap |
-| `/mode` | поточний режим виконання і модель витрат |
+| `/strategies` | list strategies and their parameters |
+| `/backtest SYM STRAT [TF]` | backtest: ideal vs realistic + Buy & Hold |
+| `/optimize SYM STRAT [TF]` | grid search + **walk-forward** (overfit check) |
+| `/run SYM STRAT [TF]` | start a strategy live (paper or Binance) |
+| `/status`, `/runs` | active runs / run history |
+| `/stop ID` | stop a run |
+| `/report ID` | **reconcile**: live vs backtest + execution-gap breakdown |
+| `/mode` | current execution mode and cost model |
 
-`SYM`: `BTC`, `ETH`, `eth/usdt`… · `STRAT`: `ema_cross` (алиас `ema`),
-`rsi_rev` (алиас `rsi`) · `TF`: `1m 5m 15m 1h 4h 1d`.
+`SYM`: `BTC`, `ETH`, `eth/usdt`, … · `STRAT`: `ema_cross` (alias `ema`),
+`rsi_rev` (alias `rsi`) · `TF`: `1m 5m 15m 1h 4h 1d`.
 
-Приклад: `/backtest BTC ema 1h` → `/optimize BTC ema 1h` → `/run BTC ema 1h`
-→ (через кілька барів) `/report 1`.
-
----
-
-## Стратегії
-
-Дві «перспективні на бектесті» стратегії — точка старту (як у ТЗ):
-
-- **EMA Cross (trend)** — лонг, поки EMA(fast) > EMA(slow); вихід навпаки.
-- **RSI Reversion (mean-revert)** — купити перепроданість (RSI < low), вийти на RSI > high.
-
-Сигнал на барі `i` рахується **лише** з даних `[0..i]` — жодного зазирання в
-майбутнє (типове джерело брехливого бектесту). Логіка *сигналу* і логіка
-*виконання* навмисно розділені — execution gap живе саме у виконанні.
-
-Додати свою стратегію: підкласити `Strategy` у [engine/strategies.py](engine/strategies.py)
-(`target_positions` повертає цільову позицію 0/1 по барах) і додати в `STRATEGIES`.
+Example: `/backtest BTC ema 1h` → `/optimize BTC ema 1h` → `/run BTC ema 1h`
+→ (after a few bars) `/report 1`.
 
 ---
 
-## Налаштування виконання (`.env`)
+## Strategies
 
-| Змінна | Призначення | Типове |
+Two "backtest-promising" strategies as a starting point:
+
+- **EMA Cross (trend)** — long while EMA(fast) > EMA(slow), flat otherwise.
+- **RSI Reversion (mean-revert)** — buy oversold (RSI < low), exit on RSI > high.
+
+The signal at bar `i` is computed from data `[0..i]` only — no lookahead bias (a
+common source of a lying backtest). Signal logic and execution logic are kept
+separate on purpose — the execution gap lives entirely in execution.
+
+Add your own strategy: subclass `Strategy` in [engine/strategies.py](engine/strategies.py)
+(`target_positions` returns a 0/1 target position per bar) and register it in
+`STRATEGIES`.
+
+---
+
+## Execution settings (`.env`)
+
+| Variable | Purpose | Default |
 |---|---|---|
-| `TRADE_MODE` | `paper` (симуляція) або `live` (реальні ордери) | `paper` |
-| `BINANCE_API_KEY/SECRET` | ключі для `live` (testnet або бій) | — |
-| `BINANCE_TESTNET` | `1` = testnet.binance.vision, `0` = бій | `1` |
-| `FEE_BPS` | комісія, базисні пункти (10 = 0.1%) | `10` |
-| `SLIPPAGE_BPS` | модель проковзування | `5` |
-| `EXEC_LATENCY_BARS` | запізнення виконання у барах (1 = реалізм) | `1` |
-| `START_EQUITY` | стартовий капітал прогону, USDT | `1000` |
-| `POLL_SECONDS` | період опитування біржі | `20` |
-| `ADMIN_IDS` | хто може запускати торгівлю (порожнє = всі) | — |
+| `TRADE_MODE` | `paper` (simulation) or `live` (real orders) | `paper` |
+| `BINANCE_API_KEY/SECRET` | keys for `live` (testnet or mainnet) | — |
+| `BINANCE_TESTNET` | `1` = testnet.binance.vision, `0` = mainnet | `1` |
+| `FEE_BPS` | fee, basis points (10 = 0.1%) | `10` |
+| `SLIPPAGE_BPS` | slippage model | `5` |
+| `EXEC_LATENCY_BARS` | execution latency in bars (1 = realistic) | `1` |
+| `START_EQUITY` | run starting capital, USDT | `1000` |
+| `POLL_SECONDS` | exchange poll interval | `20` |
+| `ADMIN_IDS` | who may start trading (empty = everyone) | — |
 
-> Щоб перейти на реальні гроші: `TRADE_MODE=live`, `BINANCE_TESTNET=0` і ключі з
-> правами на спот-торгівлю. Починайте з малого депозиту.
+> To go live: set `TRADE_MODE=live` and add keys. Testnet keys are free at
+> testnet.binance.vision (permissions: TRADE + USER_DATA). For real liquidity and
+> slippage set `BINANCE_TESTNET=0` with mainnet keys and start with a small deposit.
 
 ---
 
-## Архітектура
+## Architecture
 
 ```
-bot.py              точка входу → app.main
-app/main.py         Telegram-пульт: команди, кнопки, форматування звітів
-core/               settings (.env), db (async SQLite: runs/fills/equity), i18n, cache
-exchange/binance.py мінімальний клієнт: публічні свічки + підписані ордери (HMAC)
+bot.py              entry point → app.main
+app/main.py         Telegram control panel: commands, buttons, report formatting
+app/ratelimit.py    per-user rate limiting middleware
+core/settings.py    .env loader and configuration
+core/db.py          async SQLite: runs / fills / equity_points
+exchange/binance.py minimal client: public klines + signed orders (HMAC)
 engine/
-  strategies.py     стратегії як чисті функції сигналів (EMA cross, RSI reversion)
-  backtester.py     подієвий бектест: латентність + комісії + slippage
+  strategies.py     strategies as pure signal functions (EMA cross, RSI reversion)
+  backtester.py     event-driven backtest: latency + fees + slippage
   metrics.py        Sharpe, CAGR, max DD, win rate, profit factor, expectancy
   optimizer.py      grid search + walk-forward (in-sample / out-of-sample)
-  broker.py         виконання: PaperBroker (симуляція) / LiveBroker (Binance)
-  runner.py         live-цикл на прогін: нові бари → сигнал → ордер → запис у БД
-  reconcile.py      live vs backtest + декомпозиція execution gap
+  broker.py         execution: PaperBroker (simulation) / LiveBroker (Binance)
+  runner.py         per-run live loop: new bar → signal → order → persist to DB
+  reconcile.py      live vs backtest + execution-gap decomposition
 data/               bot.db (runtime, git-ignored)
 ```
 
-Усі мережеві виклики йдуть через `asyncio.to_thread`, тож бот не блокується.
-Прогони переживають рестарт: стан (cash/units) відновлюється з таблиці `fills`,
-а `runner.resume_all()` піднімає всі прогони зі статусом `running`.
+All network calls run via `asyncio.to_thread`, so the bot never blocks. Runs
+survive restarts: state (cash/units) is rebuilt from the `fills` table, and
+`runner.resume_all()` re-launches every run still marked `running`.
 
 ---
 
-> ⚠️ Бектести, сигнали та live-результати — **не фінансова порада**. Алго-торгівля
-> реальними коштами пов'язана з ризиком втрати капіталу.
+> ⚠️ Backtests, signals and live results are **not financial advice**. Trading real
+> funds with an algorithm carries the risk of losing capital.

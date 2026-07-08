@@ -1,22 +1,7 @@
-"""
-Live-раннер: проганяє стратегію на свіжих барах Binance у реальному часі.
-
-Ключові рішення, що роблять live співставним з бектестом:
-
-• Сигнал рахуємо лише на ЗАКРИТИХ барах (останній, ще не закритий бар Binance
-  відкидаємо) — інакше сигнал "мерехтить" і live не відтворити бектестом.
-• Реагуємо лише коли з'явився НОВИЙ закритий бар (а не на кожен тік ціни).
-• Виконання — поточною ринковою ціною (≈ відкриття нового бару), тобто з тією
-  самою латентністю в 1 бар, що й реалістичний бектест. Звідси чесний gap.
-• equity-крива логується щотіку (mark-to-market), щоб графік був гладким.
-
-Стан (cash/units) тримаємо в пам'яті, але при рестарті бота відновлюємо з
-таблиці fills — прогін не "губиться".
-"""
 import time
+import json
 import asyncio
 import logging
-import json
 
 from core import db
 from core import settings
@@ -26,9 +11,8 @@ from exchange import binance
 
 log = logging.getLogger(__name__)
 
-# run_id -> {"task": Task, "stop": bool}
 _RUNS: dict[int, dict] = {}
-_notify = None  # async callable(run_id, text); ставить app.main
+_notify = None
 
 
 def set_notifier(fn):
@@ -45,7 +29,6 @@ async def _say(run_id, text):
 
 
 def _state_from_fills(fills, start_equity):
-    """Відновлює (cash, units, last_pos) з історії виконань."""
     cash, units = start_equity, 0.0
     for f in fills:
         if f["side"] == "BUY":
@@ -70,7 +53,6 @@ async def _run_loop(run_id: int):
     cash, units, last_pos = _state_from_fills(fills, run["start_equity"])
     last_bar_ts = fills[-1]["bar_ts"] if fills else 0
     warmup_limit = max(strat.warmup() + 10, 200)
-    # У live на testnet сигнал беремо з testnet — те саме веню, що й виконання.
     use_testnet = run["mode"] == "live" and settings.BINANCE_TESTNET
 
     await _say(run_id, f"▶️ Запущено #{run_id}: {strat.name} на {symbol} {tf} "
@@ -80,7 +62,6 @@ async def _run_loop(run_id: int):
         try:
             candles = await asyncio.to_thread(
                 binance.fetch_klines, symbol, tf, warmup_limit, None, use_testnet)
-            # Останній бар ще формується — працюємо тільки із закритими.
             closed = candles[:-1] if len(candles) > 1 else candles
             price = candles[-1]["c"]
             newest = closed[-1]
@@ -90,19 +71,18 @@ async def _run_loop(run_id: int):
                 target = strat.target_positions(closed)[-1]
 
                 if target != last_pos:
-                    if target > last_pos:        # вхід у лонг
+                    if target > last_pos:
                         fill = broker.buy(symbol, cash, price)
                         cash -= fill.qty * fill.exec_price + fill.fee
                         units += fill.qty
-                    else:                        # вихід
+                    else:
                         fill = broker.sell(symbol, units, price)
                         cash += fill.qty * fill.exec_price - fill.fee
                         units = 0.0
                     last_pos = target
-                    now = int(time.time())
-                    await db.add_fill(run_id, now, newest["t"], fill.side, fill.qty,
-                                      fill.ref_price, fill.exec_price, fill.fee,
-                                      fill.slippage_bps)
+                    await db.add_fill(run_id, int(time.time()), newest["t"], fill.side,
+                                      fill.qty, fill.ref_price, fill.exec_price,
+                                      fill.fee, fill.slippage_bps)
                     await db.set_run_pos(run_id, last_pos)
                     eq = cash + units * price
                     await _say(run_id,
@@ -110,8 +90,8 @@ async def _run_loop(run_id: int):
                                f"(сигнал {fill.ref_price:.4f}, slip {fill.slippage_bps:.1f}bps, "
                                f"fee {fill.fee:.4f}) | equity {eq:.2f}")
 
-            eq = cash + units * price
-            await db.add_equity_point(run_id, int(time.time()), eq, last_pos, price)
+            await db.add_equity_point(run_id, int(time.time()),
+                                      cash + units * price, last_pos, price)
 
         except binance.ExchangeError as e:
             log.warning("run %s: %s", run_id, e)
@@ -139,7 +119,6 @@ async def stop(run_id: int) -> bool:
     if run_id in _RUNS:
         _RUNS[run_id]["stop"] = True
         return True
-    # не в пам'яті (напр. після рестарту без resume) — закриваємо в БД
     run = await db.get_run(run_id)
     if run and run["status"] == "running":
         await db.stop_run(run_id)
@@ -148,7 +127,6 @@ async def stop(run_id: int) -> bool:
 
 
 async def resume_all():
-    """Після рестарту бота піднімаємо всі прогони зі статусом running."""
     for run in await db.all_running_runs():
         rid = run["id"]
         if rid not in _RUNS:

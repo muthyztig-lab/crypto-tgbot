@@ -1,40 +1,21 @@
-"""
-Оптимізація параметрів стратегії перебором сітки (grid search).
-
-Дві важливі чесні деталі (саме за такі судження вакансія й платить):
-
-• Оптимізуємо з РЕАЛІСТИЧНИМИ витратами (latency + fee + slippage), а не на
-  "ідеальному" бектесті — інакше переможе крихка перепідігнана конфігурація.
-
-• Walk-forward перевірка: ділимо історію на in-sample (підбір) та out-of-sample
-  (перевірка). Якщо найкращі IS-параметри валяться на OOS — це перепідгонка
-  (overfitting), і ми це явно показуємо, а не ховаємо.
-"""
 import itertools
 
 from engine import backtester
-from engine.metrics import sharpe
-from exchange.binance import BARS_PER_YEAR
 
 
 def _combos(grid):
     keys = list(grid)
     for values in itertools.product(*(grid[k] for k in keys)):
         combo = dict(zip(keys, values))
-        # EMA: пропускаємо безглузді (fast >= slow).
         if "fast" in combo and "slow" in combo and combo["fast"] >= combo["slow"]:
             continue
-        # RSI: low має бути нижче high.
         if "low" in combo and "high" in combo and combo["low"] >= combo["high"]:
             continue
         yield combo
 
 
 def _score(res):
-    """Цільова функція: Sharpe, з легким штрафом за просадку."""
-    s = res.summary.get("sharpe", 0.0)
-    dd = res.summary.get("max_dd_pct", 0.0)
-    return s - 0.02 * dd
+    return res.summary.get("sharpe", 0.0) - 0.02 * res.summary.get("max_dd_pct", 0.0)
 
 
 def optimize(strategy, candles, *, fee_bps, slippage_bps, latency_bars,
@@ -59,16 +40,12 @@ def optimize(strategy, candles, *, fee_bps, slippage_bps, latency_bars,
 
 def walk_forward(strategy, candles, *, fee_bps, slippage_bps, latency_bars,
                  start_equity, interval="1h", split=0.7):
-    """
-    Підбираємо параметри на перших `split` даних (IS), перевіряємо на решті (OOS).
-    Повертає найкращі IS-параметри та їх метрики на OOS — головний антифрод-тест.
-    """
     cut = int(len(candles) * split)
-    is_c, oos_c = candles[:cut], candles[cut:]
-    if len(is_c) < 50 or len(oos_c) < 30:
+    in_sample, out_sample = candles[:cut], candles[cut:]
+    if len(in_sample) < 50 or len(out_sample) < 30:
         return None
 
-    top, _ = optimize(strategy, is_c, fee_bps=fee_bps, slippage_bps=slippage_bps,
+    top, _ = optimize(strategy, in_sample, fee_bps=fee_bps, slippage_bps=slippage_bps,
                       latency_bars=latency_bars, start_equity=start_equity,
                       interval=interval, top_n=1)
     if not top:
@@ -76,7 +53,7 @@ def walk_forward(strategy, candles, *, fee_bps, slippage_bps, latency_bars,
     best = top[0]
     s = strategy.with_params(**best["params"])
     oos = backtester.run_strategy(
-        s, oos_c, fee_bps=fee_bps, slippage_bps=slippage_bps,
+        s, out_sample, fee_bps=fee_bps, slippage_bps=slippage_bps,
         latency_bars=latency_bars, start_equity=start_equity, interval=interval)
     return {
         "params": best["params"],

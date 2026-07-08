@@ -1,14 +1,3 @@
-"""
-Мінімальний клієнт Binance без важких залежностей (тільки requests + hmac).
-
-Публічні дані (свічки, ціна) працюють без ключів і однакові для бою й testnet,
-тож їх завжди тягнемо з основного домену. Підписані запити (баланс, ордери)
-йдуть на testnet.binance.vision або api.binance.com залежно від BINANCE_TESTNET.
-
-Чому власний клієнт, а не ccxt: проєкт принципово "works out of the box" без
-зайвих залежностей; HMAC-підпис Binance — це 10 рядків, і так видно, що саме
-відбувається на рівні API (корисно, коли треба пояснювати execution gap).
-"""
 import time
 import math
 import hmac
@@ -22,13 +11,11 @@ from core import settings
 PUBLIC_BASE = "https://api.binance.com"
 TESTNET_BASE = "https://testnet.binance.vision"
 
-# Інтервали Binance ← наші ключі таймфреймів.
 INTERVALS = {
     "1m": "1m", "5m": "5m", "15m": "15m",
     "1h": "1h", "4h": "4h", "1d": "1d",
 }
 
-# Скільки таких барів у році (для річної нормалізації метрик).
 BARS_PER_YEAR = {
     "1m": 525_600, "5m": 105_120, "15m": 35_040,
     "1h": 8_760, "4h": 2_190, "1d": 365,
@@ -39,7 +26,7 @@ _SESSION = requests.Session()
 
 
 class ExchangeError(Exception):
-    """Зрозуміла помилка біржі (показуємо в чат)."""
+    pass
 
 
 def _trade_base() -> str:
@@ -47,23 +34,14 @@ def _trade_base() -> str:
 
 
 def normalize_symbol(symbol: str) -> str:
-    """BTC, btc/usdt, BTC-USDT, BTCUSDT → BTCUSDT."""
     s = symbol.upper().replace("/", "").replace("-", "").replace("_", "")
-    if not s.endswith("USDT") and not s.endswith("USDC") and not s.endswith("BUSD"):
+    if not s.endswith(("USDT", "USDC", "BUSD")):
         s += "USDT"
     return s
 
 
 def fetch_klines(symbol: str, interval: str, limit: int = 500,
                  end_ms: int | None = None, testnet: bool = False) -> list:
-    """
-    Свічки. Повертає список барів від старих до нових:
-    {"t": open_ms, "o","h","l","c","v": float, "close_ms": int}.
-
-    testnet=True — беремо дані з тієї ж біржі, де виконуємо ордери (testnet),
-    щоб сигнал і виконання були в одному веню (інакше equity рахується криво).
-    Для бектесту/оптимізації лишаємо mainnet (там багата історія).
-    """
     iv = INTERVALS.get(interval)
     if not iv:
         raise ExchangeError(f"Невідомий таймфрейм: {interval}")
@@ -92,7 +70,6 @@ def fetch_klines(symbol: str, interval: str, limit: int = 500,
 
 
 def fetch_price(symbol: str, testnet: bool = False) -> float:
-    """Поточна ціна."""
     base = TESTNET_BASE if testnet else PUBLIC_BASE
     try:
         r = _SESSION.get(f"{base}/api/v3/ticker/price",
@@ -104,7 +81,6 @@ def fetch_price(symbol: str, testnet: bool = False) -> float:
         raise ExchangeError(f"Не вдалося отримати ціну: {e}") from e
 
 
-# Фільтри символу (крок лоту, мін. сума) — щоб ордери не падали з LOT_SIZE/NOTIONAL.
 _EXINFO: dict = {}
 
 
@@ -132,7 +108,6 @@ def _exchange_info(symbol: str) -> dict:
 
 
 def round_qty(symbol: str, qty: float) -> float:
-    """Заокруглює кількість донизу до кроку лоту біржі."""
     step = _exchange_info(symbol)["step"]
     if step and step > 0:
         qty = math.floor(qty / step) * step
@@ -140,8 +115,6 @@ def round_qty(symbol: str, qty: float) -> float:
         return round(qty, decimals)
     return qty
 
-
-# ───────────────────────── Підписані запити (live) ─────────────────────────
 
 def _signed_request(method: str, path: str, params: dict) -> dict:
     if not (settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET):
@@ -152,9 +125,7 @@ def _signed_request(method: str, path: str, params: dict) -> dict:
     params["recvWindow"] = 5000
     query = urllib.parse.urlencode(params)
     signature = hmac.new(
-        settings.BINANCE_API_SECRET.encode(),
-        query.encode(),
-        hashlib.sha256,
+        settings.BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256,
     ).hexdigest()
     url = f"{_trade_base()}{path}?{query}&signature={signature}"
     headers = {**_HEADERS, "X-MBX-APIKEY": settings.BINANCE_API_KEY}
@@ -169,17 +140,12 @@ def _signed_request(method: str, path: str, params: dict) -> dict:
 
 
 def account_balances() -> dict:
-    """{asset: free_amount} для ненульових балансів (live/testnet)."""
     data = _signed_request("GET", "/api/v3/account", {})
     return {b["asset"]: float(b["free"]) for b in data.get("balances", [])
             if float(b["free"]) > 0}
 
 
 def market_order(symbol: str, side: str, quantity: float) -> dict:
-    """
-    Ринковий ордер на біржі (live). side: BUY|SELL, quantity у базовому активі.
-    Повертає сирий fill-звіт Binance.
-    """
     qty = round_qty(symbol, quantity)
     info = _exchange_info(symbol)
     if info["min_qty"] and qty < info["min_qty"]:
@@ -194,10 +160,9 @@ def market_order(symbol: str, side: str, quantity: float) -> dict:
     })
     fills = data.get("fills", [])
     if fills:
-        qty = sum(float(f["qty"]) for f in fills)
+        filled = sum(float(f["qty"]) for f in fills)
         cost = sum(float(f["qty"]) * float(f["price"]) for f in fills)
-        fee = sum(float(f["commission"]) for f in fills)
-        data["_avg_price"] = cost / qty if qty else 0.0
-        data["_filled_qty"] = qty
-        data["_fee"] = fee
+        data["_avg_price"] = cost / filled if filled else 0.0
+        data["_filled_qty"] = filled
+        data["_fee"] = sum(float(f["commission"]) for f in fills)
     return data

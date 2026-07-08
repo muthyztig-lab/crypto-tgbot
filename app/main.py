@@ -1,20 +1,3 @@
-"""
-Algo-Trading R&D Bot — Telegram-пульт керування дослідницькою платформою.
-
-Робочий цикл точно за вакансією:
-  дані → бектест → оптимізація → live-запуск (paper/Binance) → reconcile.
-
-Команди:
-  /strategies                    — список стратегій і параметрів
-  /backtest SYM STRAT [TF]       — ідеальний vs реалістичний бектест + Buy&Hold
-  /optimize SYM STRAT [TF]       — grid search + walk-forward (тест на перепідгонку)
-  /run SYM STRAT [TF]            — запустити стратегію live (paper або Binance)
-  /status                        — активні прогони та поточний капітал
-  /runs                          — історія прогонів
-  /stop ID                       — зупинити прогін
-  /report ID                     — reconcile: live vs backtest + розклад gap
-  /mode                          — поточний режим/налаштування виконання
-"""
 import asyncio
 import logging
 
@@ -67,11 +50,10 @@ def _resolve_strat(key: str) -> str:
 
 
 def _parse(text):
-    """'/cmd BTC ema 1h' -> (symbol, strat_key, tf)."""
-    p = text.split()[1:]
-    symbol = p[0] if len(p) > 0 else DEFAULT_SYMBOL
-    strat = _resolve_strat(p[1]) if len(p) > 1 else DEFAULT_STRAT
-    tf = p[2].lower() if len(p) > 2 else DEFAULT_TF
+    parts = text.split()[1:]
+    symbol = parts[0] if len(parts) > 0 else DEFAULT_SYMBOL
+    strat = _resolve_strat(parts[1]) if len(parts) > 1 else DEFAULT_STRAT
+    tf = parts[2].lower() if len(parts) > 2 else DEFAULT_TF
     if tf not in binance.INTERVALS:
         tf = DEFAULT_TF
     return symbol, strat, tf
@@ -83,12 +65,10 @@ def main_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📊 Бектест ETH (RSI)", callback_data="bt:ETH:rsi_rev:1h")],
         [InlineKeyboardButton(text="🧪 Оптимізувати BTC", callback_data="opt:BTC:ema_cross:1h"),
          InlineKeyboardButton(text="📋 Стратегії", callback_data="strats")],
-        [InlineKeyboardButton(text="▶️ Запуск BTC (paper)", callback_data="run:BTC:ema_cross:1h"),
+        [InlineKeyboardButton(text="▶️ Запуск BTC", callback_data="run:BTC:ema_cross:1h"),
          InlineKeyboardButton(text="📡 Статус", callback_data="status")],
     ])
 
-
-# ───────────────────────── форматування звітів ─────────────────────────
 
 def _fmt_params(params):
     return ", ".join(f"{k}={v:g}" if isinstance(v, (int, float)) else f"{k}={v}"
@@ -209,10 +189,8 @@ async def _reply(target, text):
         await target.answer(text, parse_mode="Markdown",
                             disable_web_page_preview=True)
     except Exception:
-        await target.answer(text)  # підстраховка, якщо Markdown побився
+        await target.answer(text)
 
-
-# ───────────────────────── дії (спільні для команд і кнопок) ─────────────────────────
 
 async def _do_backtest(target, symbol, key, tf):
     try:
@@ -313,8 +291,6 @@ async def _send_strategies(target):
     await _reply(target, "\n".join(lines))
 
 
-# ───────────────────────── команди ─────────────────────────
-
 def _mode_line() -> str:
     mode = settings.TRADE_MODE
     if mode == "live" and settings.can_trade_live():
@@ -327,7 +303,6 @@ def _mode_line() -> str:
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await db.ensure_user(message.from_user.id)
     await message.answer(
         "🤖 *Algo-Trading R&D Bot*\n"
         "Дослідницька платформа: дані → бектест → оптимізація → live → reconcile.\n\n"
@@ -455,8 +430,6 @@ async def _do_report(target, user_id, run_id):
         await m.edit_text("⚠️ Помилка reconcile.")
 
 
-# ───────────────────────── inline-кнопки ─────────────────────────
-
 @dp.callback_query(F.data == "strats")
 async def cb_strats(call: CallbackQuery):
     await call.answer()
@@ -489,8 +462,6 @@ async def cb_run(call: CallbackQuery):
     await call.answer("Запуск…")
     await _do_run(call.message, call.from_user.id, sym, key, tf)
 
-
-# ───────────────────────── запуск ─────────────────────────
 
 async def _notify(run_id, text):
     run = await db.get_run(run_id)

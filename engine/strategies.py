@@ -1,23 +1,7 @@
-"""
-Стратегії як чисті функції сигналів.
-
-Кожна стратегія перетворює список барів на список ЦІЛЬОВИХ ПОЗИЦІЙ по барах:
-    1.0  = у лонгу на весь капітал,
-    0.0  = поза ринком.
-(spot, без шортів — як на Binance spot testnet).
-
-Сигнал на барі i розраховується ТІЛЬКИ за даними [0..i] — жодного зазирання в
-майбутнє. Це критично: типова причина "бектест бреше" — lookahead bias.
-
-Бектестер і live-раннер потім самі вирішують, КОЛИ і ПО ЯКІЙ ЦІНІ виконати зміну
-позиції (на закритті бару vs на відкритті наступного + slippage) — саме там
-живе execution gap, тож логіку сигналу і логіку виконання тримаємо нарізно.
-"""
 from dataclasses import dataclass, field
 
 
 def _ema(values, period):
-    """EMA-серія тієї ж довжини, що й values."""
     if not values:
         return []
     k = 2 / (period + 1)
@@ -28,7 +12,6 @@ def _ema(values, period):
 
 
 def _rsi_series(closes, period):
-    """RSI по Wilder для кожного бару (None, поки даних замало)."""
     n = len(closes)
     out = [None] * n
     if n <= period:
@@ -54,14 +37,13 @@ class Strategy:
     name: str
     desc: str
     params: dict
-    grid: dict = field(default_factory=dict)   # параметр -> список значень для оптимізації
+    grid: dict = field(default_factory=dict)
 
     def with_params(self, **overrides):
         p = {**self.params, **{k: v for k, v in overrides.items() if v is not None}}
         return type(self)(self.key, self.name, self.desc, p, self.grid)
 
     def warmup(self) -> int:
-        """Скільки початкових барів — "розігрів" (позиція=0, не торгуємо)."""
         return 0
 
     def target_positions(self, candles) -> list:
@@ -69,7 +51,6 @@ class Strategy:
 
 
 class EmaCross(Strategy):
-    """Трендова: лонг, поки EMA(fast) > EMA(slow), інакше — кеш."""
 
     def warmup(self):
         return int(self.params["slow"])
@@ -78,21 +59,14 @@ class EmaCross(Strategy):
         closes = [c["c"] for c in candles]
         fast = _ema(closes, int(self.params["fast"]))
         slow = _ema(closes, int(self.params["slow"]))
-        w = self.warmup()
-        pos = []
-        for i in range(len(closes)):
-            if i < w:
-                pos.append(0.0)
-            else:
-                pos.append(1.0 if fast[i] > slow[i] else 0.0)
-        return pos
+        warmup = self.warmup()
+        return [
+            0.0 if i < warmup else (1.0 if fast[i] > slow[i] else 0.0)
+            for i in range(len(closes))
+        ]
 
 
 class RsiReversion(Strategy):
-    """
-    Контртрендова: купуємо перепроданість (RSI < low), виходимо на RSI > high.
-    Між порогами тримаємо попередню позицію (гістерезис).
-    """
 
     def warmup(self):
         return int(self.params["period"]) + 1
@@ -102,8 +76,7 @@ class RsiReversion(Strategy):
         rsi = _rsi_series(closes, int(self.params["period"]))
         low, high = float(self.params["low"]), float(self.params["high"])
         pos, cur = [], 0.0
-        for i in range(len(closes)):
-            r = rsi[i]
+        for r in rsi:
             if r is not None:
                 if r < low:
                     cur = 1.0
@@ -113,7 +86,6 @@ class RsiReversion(Strategy):
         return pos
 
 
-# Реєстр двох "перспективних на бектесті" стратегій — точка входу для бота.
 STRATEGIES = {
     "ema_cross": EmaCross(
         key="ema_cross",

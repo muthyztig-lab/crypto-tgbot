@@ -1,23 +1,6 @@
-"""
-Reconcile: чесне порівняння live-прогону з бектестом і РОЗКЛАДАННЯ розриву.
-
-Це головна цінність із вакансії: не "просто не полетіло", а розкласти причину
-на складові. Ми проганяємо ТРИ бектести на тих самих барах, що бачив live:
-
-  ideal     — latency=0, fee=0, slip=0     ("папір з майбутнього", верхня межа)
-  +timing   — latency=1, fee=0, slip=0     (додає лише запізнення на 1 бар)
-  +costs    — latency=1, fee,   slip       (додає комісії та проковзування)
-
-Тоді розрив ideal → live розкладається так:
-  timing_cost   = ideal   − (+timing)      ← вартість входу не на закритті, а на відкритті
-  cost_cost     = (+timing) − (+costs)     ← комісії + модельне проковзування
-  residual      = (+costs) − live          ← НЕзмодельоване: пропущені бари, гранулярність
-                                              полінгу, часткові виконання, реальна біржа
-
-Сума цих трьох = ideal_return − live_return. Кожну складову показуємо явно.
-"""
 import time
 import json
+import asyncio
 
 from core import db
 from core import settings
@@ -33,6 +16,11 @@ def _total_return(equity):
     if len(equity) < 2 or not equity[0]:
         return 0.0
     return (equity[-1] / equity[0] - 1) * 100
+
+
+async def _fetch(symbol, tf, limit, testnet=False):
+    return await asyncio.to_thread(binance.fetch_klines, symbol, tf, limit,
+                                   None, testnet)
 
 
 async def reconcile(run_id: int) -> dict:
@@ -51,8 +39,6 @@ async def reconcile(run_id: int) -> dict:
     start_equity = run["start_equity"]
     bar_ms = _BAR_MS.get(tf, 3_600_000)
 
-    # Бари, що покривають період live + розігрів для індикаторів.
-    # Якщо live йшов на testnet — і дані беремо з testnet (те саме веню).
     use_testnet = run["mode"] == "live" and settings.BINANCE_TESTNET
     candles_all = await _fetch(symbol, tf, 1000, use_testnet)
     warmup_ms = (strat.warmup() + 5) * bar_ms
@@ -111,12 +97,7 @@ async def reconcile(run_id: int) -> dict:
 
 
 def _verdict(total, timing, cost, residual, live):
-    """Текстовий висновок — те, що в оголошенні названо 'правда на твоєму боці'."""
-    lines = []
-    if live > 0:
-        lines.append(f"Live у плюсі: {live:+.2f}%.")
-    else:
-        lines.append(f"Live у мінусі: {live:+.2f}%.")
+    lines = [f"Live у {'плюсі' if live > 0 else 'мінусі'}: {live:+.2f}%."]
     biggest = max(("запізнення виконання", timing),
                   ("комісії+проковзування", cost),
                   ("незмодельований residual", residual),
@@ -129,9 +110,3 @@ def _verdict(total, timing, cost, residual, live):
     elif abs(total) < 1.0:
         lines.append("✅ Розрив малий — live добре відтворює бектест на цьому періоді.")
     return " ".join(lines)
-
-
-async def _fetch(symbol, tf, limit, testnet=False):
-    import asyncio
-    return await asyncio.to_thread(binance.fetch_klines, symbol, tf, limit,
-                                   None, testnet)
